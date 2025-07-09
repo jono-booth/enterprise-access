@@ -996,6 +996,14 @@ def expire_assignment(
         if automatic_expiration_reason == AssignmentAutomaticExpiredReason.NINETY_DAYS_PASSED:
             assignment.clear_pii()
 
+        try:
+            logger.info('Modifying credit request %s to expired', assignment.credit_request.uuid)
+            assignment.credit_request
+            assignment.credit_request.state = LearnerContentAssignmentStateChoices.EXPIRED
+            assignment.credit_request.save()
+        except LearnerContentAssignment.credit_request.RelatedObjectDoesNotExist:
+            logger.info('Assignment %s has no credit request', assignment.uuid)
+
         assignment.save()
         send_assignment_automatically_expired_email.delay(assignment.uuid)
 

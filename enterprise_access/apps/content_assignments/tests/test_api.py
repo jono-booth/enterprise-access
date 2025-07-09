@@ -10,6 +10,7 @@ from django.utils import timezone
 
 from enterprise_access.apps.core.tests.factories import UserFactory
 from enterprise_access.apps.subsidy_access_policy.tests.factories import AssignedLearnerCreditAccessPolicyFactory
+from enterprise_access.apps.subsidy_request.tests.factories import LearnerCreditRequestFactory
 
 from ..api import (
     AllocationException,
@@ -1124,3 +1125,61 @@ class TestAssignmentExpiration(TestCase):
         self.assertEqual(assignment.learner_email, 'larry@stooges.com')
         self.assertEqual(assignment.lms_user_id, 12345)
         mock_expired_email.delay.assert_called_once_with(assignment.uuid)
+
+    @ddt.data(
+        *expirable_assignments_with_content_type()
+    )
+    @ddt.unpack
+    @mock.patch('enterprise_access.apps.content_assignments.api.send_assignment_automatically_expired_email')
+    def test_expire_credit_request_when_assigment_expires(
+        self,
+        expirable_assignment_state,
+        is_assigned_course_run,
+        mock_expired_email,
+    ):
+        """
+        Tests that we expire any open credit requests when we expire an assignment.
+        """
+        course_key = 'edX+DemoX'
+        course_run_key = 'course-v1:edX+DemoX+T2024'
+        content_key = course_key
+        parent_content_key = None
+        if is_assigned_course_run:
+            content_key = course_run_key
+            parent_content_key = course_key
+
+        credit_request = LearnerCreditRequestFactory.create()
+
+        assignment = LearnerContentAssignmentFactory.create(
+            credit_request=credit_request,
+            assignment_configuration=self.assignment_configuration,
+            content_key=content_key,
+            parent_content_key=parent_content_key,
+            is_assigned_course_run=is_assigned_course_run,
+            state=expirable_assignment_state,
+            learner_email='larry@stooges.com',
+            lms_user_id=12345,
+        )
+        assignment.add_successful_notified_action()
+
+        # create non-expired content metadata
+        mock_content_metadata = self.mock_content_metadata(
+            content_key=content_key,
+            course_run_key=course_run_key,
+            enroll_by_date=delta_t(days=100, as_string=True),
+        )
+
+        # set a policy-subsidy expiration date in the past
+        mock_subsidy_record = {'expiration_datetime': delta_t(days=-1, as_string=True)}
+        with mock.patch.object(self.policy, 'subsidy_record', return_value=mock_subsidy_record):
+            expire_assignment(
+                assignment,
+                content_metadata=mock_content_metadata,
+                modify_assignment=True,
+            )
+
+        credit_request.refresh_from_db()
+        assignment.refresh_from_db()
+
+        self.assertEqual(assignment.state, LearnerContentAssignmentStateChoices.EXPIRED)
+        self.assertEqual(credit_request.state, LearnerContentAssignmentStateChoices.EXPIRED)
